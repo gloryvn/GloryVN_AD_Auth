@@ -1,0 +1,5 @@
+python-telegram-bot>=20.0
+payos>=1.0.0
+supabase>=2.0.0
+python-dotenv>=1.0.0
+Flask>=2.0.0
