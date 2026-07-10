@@ -631,10 +631,16 @@ def start_bot():
 # Gunicorn sẽ dùng 'app' để chạy Flask
 app = flask_app
 
-# Khi deploy (gunicorn import), tự động chạy bot polling trong thread nền
-if not os.getenv("RENDER_SKIP_BOT", ""):
+# Gọi hàm này để start bot polling trong thread nền
+def start_bot_in_background():
     logger.info("Khởi động bot Telegram trong thread nền...")
-    threading.Thread(target=start_bot, daemon=True).start()
+    t = threading.Thread(target=start_bot, daemon=True)
+    t.start()
+
+# Mặc định: tự động start bot khi import (cho gunicorn 1 worker)
+# Set RENDER_SKIP_BOT=1 nếu muốn dùng gunicorn.conf.py chủ động
+if not os.getenv("RENDER_SKIP_BOT", ""):
+    start_bot_in_background()
 
 # Chạy trực tiếp (python app.py)
 if __name__ == "__main__":
