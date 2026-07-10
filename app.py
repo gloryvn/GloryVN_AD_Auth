@@ -486,7 +486,6 @@ def process_paid_order(order_code: int) -> str | None:
     if not record or record["status"] == "completed":
         return None
 
-    code = getattr(record, 'code', '')
     key = record["license_key"]
     duration = record["duration_hours"]
     uid = record["telegram_id"]
@@ -528,9 +527,13 @@ def payos_webhook():
         return jsonify({"message": "Invalid"}), 400
 
 
+def _get_oc():
+    return request.args.get("orderCode") or request.args.get("order_code")
+
+
 @flask_app.route("/success")
 def payment_success():
-    oc = request.args.get("order_code")
+    oc = _get_oc()
     if not oc:
         return "<h2>Thiếu mã đơn hàng</h2>", 400
 
@@ -545,27 +548,34 @@ def payment_success():
     if not record:
         return f"<h2>Không tìm thấy đơn hàng {oc}</h2>"
 
-    msg = ""
-    if payos_status == "PAID" and record["status"] == "pending":
+    if (payos_status == "PAID" or payos_status == "COMPLETED") and record["status"] == "pending":
         key = process_paid_order(order_code)
-        if key:
-            msg = f"Key: <b>{key}</b>"
-        else:
-            msg = "Không thể tạo key, vui lòng liên hệ admin."
         status_text = "Thành công"
+        msg = f"Key: <b>{key}</b>" if key else "Lỗi tạo key, liên hệ admin."
     elif record["status"] == "completed":
-        msg = f"Key: <b>{record['license_key']}</b>"
         status_text = "Thành công"
+        msg = f"Key: <b>{record['license_key']}</b>"
+    elif record["status"] == "cancelled":
+        status_text = "Đã huỷ"
+        msg = "Đơn hàng đã bị huỷ."
     else:
-        msg = "Giao dịch chưa hoàn tất. Vui lòng quay lại Telegram và nhấn nút Kiểm tra."
-        status_text = "Chưa hoàn tất"
+        status_name = payos_status or "Đang chờ"
+        return f"""<html><head><meta charset="utf-8"><title>Kết quả thanh toán</title>
+<style>body{{font-family:sans-serif;text-align:center;padding:40px}}
+h2{{color:#ffc107}}</style></head><body>
+<h2>⏳ Giao dịch đang xử lý</h2>
+<p>Mã đơn: <b>{oc}</b></p>
+<p>Trạng thái PayOS: {status_name}</p>
+<p>Vui lòng quay lại Telegram và nhấn nút <b>Kiểm tra</b>.</p>
+<p><a href="https://t.me/GloryVN_Ad_Bot">Quay lại Telegram</a></p>
+</body></html>"""
 
     return f"""<html><head><meta charset="utf-8"><title>Kết quả thanh toán</title>
 <style>body{{font-family:sans-serif;text-align:center;padding:40px}}
-h2{{color:#333}}.success{{color:#28a745}}.pending{{color:#ffc107}}</style></head>
+h2{{color:#333}}.ok{{color:#28a745}}.ko{{color:#dc3545}}</style></head>
 <body>
-<h2 class="{'success' if status_text == 'Thành công' else 'pending'}">
-{'✅' if status_text == 'Thành công' else '⏳'} {status_text}</h2>
+<h2 class="{'ok' if status_text == 'Thành công' else 'ko'}">
+{'✅' if status_text == 'Thành công' else '❌'} {status_text}</h2>
 <p>Mã đơn: <b>{oc}</b></p>
 <p>{msg}</p>
 <p><a href="https://t.me/GloryVN_Ad_Bot">Quay lại Telegram</a></p>
@@ -574,10 +584,12 @@ h2{{color:#333}}.success{{color:#28a745}}.pending{{color:#ffc107}}</style></head
 
 @flask_app.route("/cancel")
 def payment_cancel():
-    oc = request.args.get("order_code")
-    if oc:
-        update_payment_status(int(oc), "cancelled")
-        record = get_payment_by_order(int(oc))
+    oc = _get_oc()
+    order_code = int(oc) if oc else None
+
+    if order_code:
+        update_payment_status(order_code, "cancelled")
+        record = get_payment_by_order(order_code)
         if record:
             send_telegram(record["telegram_id"],
                 f"\u274c *Đơn hàng đã bị huỷ*\n"
