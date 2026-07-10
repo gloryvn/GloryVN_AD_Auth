@@ -519,9 +519,7 @@ def payos_webhook():
         return jsonify({"message": "Invalid"}), 400
 
 
-# ─── Main ───────────────────────────────────────────────────
-
-def main():
+def start_bot():
     global _bot_instance
     ensure_tables()
 
@@ -536,12 +534,20 @@ def main():
     application.add_handler(CallbackQueryHandler(check_payment, pattern=r"^check_"))
     application.add_handler(CallbackQueryHandler(cancel_payment, pattern=r"^cancel_"))
 
-    if WEBHOOK_URL:
-        threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=PORT, debug=False), daemon=True).start()
-        logger.info(f"Flask webhook đang chạy tại port {PORT}")
-
+    logger.info("Bot Telegram đã sẵn sàng (polling)")
     application.run_polling()
 
 
+# Gunicorn sẽ dùng 'app' để chạy Flask
+app = flask_app
+
+# Khi deploy (gunicorn import), tự động chạy bot polling trong thread nền
+if not os.getenv("RENDER_SKIP_BOT", ""):
+    logger.info("Khởi động bot Telegram trong thread nền...")
+    threading.Thread(target=start_bot, daemon=True).start()
+
+# Chạy trực tiếp (python app.py)
 if __name__ == "__main__":
-    main()
+    if WEBHOOK_URL:
+        threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=PORT, debug=False), daemon=True).start()
+    start_bot()
