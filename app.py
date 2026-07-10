@@ -481,6 +481,30 @@ def send_telegram(chat_id: int, text: str):
             logger.error(f"Lỗi gửi tin nhắn {chat_id}: {e}")
 
 
+def process_paid_order(order_code: int) -> str | None:
+    record = get_payment_by_order(order_code)
+    if not record or record["status"] == "completed":
+        return None
+
+    code = getattr(record, 'code', '')
+    key = record["license_key"]
+    duration = record["duration_hours"]
+    uid = record["telegram_id"]
+
+    if insert_license_key(key, duration):
+        update_payment_status(order_code, "completed")
+        send_telegram(uid,
+            f"\U0001f389 *Thanh toán thành công!*\n"
+            f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+            f"\U0001f511 **Key:** `{key}`\n"
+            f"\u23f1 **Thời hạn:** `{duration_label(duration)} ({duration}h)`\n"
+            f"\U0001f4c6 **Mã đơn:** `{order_code}`"
+        )
+        logger.info(f"Đã xử lý đơn {order_code} -> key {key}")
+        return key
+    return None
+
+
 @flask_app.route("/payos-webhook", methods=["POST"])
 def payos_webhook():
     try:
@@ -496,27 +520,81 @@ def payos_webhook():
             return jsonify({"message": "OK"}), 200
 
         if code == "00":
-            key = record["license_key"]
-            duration = record["duration_hours"]
-            uid = record["telegram_id"]
-
-            if insert_license_key(key, duration):
-                update_payment_status(order_code, "completed")
-                send_telegram(uid,
-                    f"\U0001f389 *Thanh toán thành công!*\n"
-                    f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-                    f"\U0001f511 **Key:** `{key}`\n"
-                    f"\u23f1 **Thời hạn:** `{duration_label(duration)} ({duration}h)`\n"
-                    f"\U0001f4c6 **Mã đơn:** `{order_code}`"
-                )
-                logger.info(f"Webhook: key {key} -> đơn {order_code}")
-            else:
-                logger.error(f"Webhook: lỗi insert key {order_code}")
+            process_paid_order(order_code)
 
         return jsonify({"message": "OK"}), 200
     except Exception as e:
         logger.error(f"Webhook lỗi: {e}")
         return jsonify({"message": "Invalid"}), 400
+
+
+@flask_app.route("/success")
+def payment_success():
+    oc = request.args.get("order_code")
+    if not oc:
+        return "<h2>Thiếu mã đơn hàng</h2>", 400
+
+    order_code = int(oc)
+    try:
+        info = payOS.payment_requests.get(order_code)
+        payos_status = getattr(info, 'status', None)
+    except Exception:
+        payos_status = None
+
+    record = get_payment_by_order(order_code)
+    if not record:
+        return f"<h2>Không tìm thấy đơn hàng {oc}</h2>"
+
+    msg = ""
+    if payos_status == "PAID" and record["status"] == "pending":
+        key = process_paid_order(order_code)
+        if key:
+            msg = f"Key: <b>{key}</b>"
+        else:
+            msg = "Không thể tạo key, vui lòng liên hệ admin."
+        status_text = "Thành công"
+    elif record["status"] == "completed":
+        msg = f"Key: <b>{record['license_key']}</b>"
+        status_text = "Thành công"
+    else:
+        msg = "Giao dịch chưa hoàn tất. Vui lòng quay lại Telegram và nhấn nút Kiểm tra."
+        status_text = "Chưa hoàn tất"
+
+    return f"""<html><head><meta charset="utf-8"><title>Kết quả thanh toán</title>
+<style>body{{font-family:sans-serif;text-align:center;padding:40px}}
+h2{{color:#333}}.success{{color:#28a745}}.pending{{color:#ffc107}}</style></head>
+<body>
+<h2 class="{'success' if status_text == 'Thành công' else 'pending'}">
+{'✅' if status_text == 'Thành công' else '⏳'} {status_text}</h2>
+<p>Mã đơn: <b>{oc}</b></p>
+<p>{msg}</p>
+<p><a href="https://t.me/GloryVN_Ad_Bot">Quay lại Telegram</a></p>
+</body></html>"""
+
+
+@flask_app.route("/cancel")
+def payment_cancel():
+    oc = request.args.get("order_code")
+    if oc:
+        update_payment_status(int(oc), "cancelled")
+        record = get_payment_by_order(int(oc))
+        if record:
+            send_telegram(record["telegram_id"],
+                f"\u274c *Đơn hàng đã bị huỷ*\n"
+                f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
+                f"\U0001f4c6 **Mã đơn:** `{oc}`\n"
+                f"\U0001f511 **Key:** `{record['license_key']}`"
+            )
+
+    return f"""<html><head><meta charset="utf-8"><title>Đã huỷ</title>
+<style>body{{font-family:sans-serif;text-align:center;padding:40px;color:#666}}
+h2{{color:#dc3545}}</style></head>
+<body>
+<h2>❌ Đã huỷ thanh toán</h2>
+<p>Mã đơn: <b>{oc}</b></p>
+<p>Bạn có thể tạo đơn mới qua Telegram.</p>
+<p><a href="https://t.me/GloryVN_Ad_Bot">Quay lại Telegram</a></p>
+</body></html>"""
 
 
 def start_bot():
