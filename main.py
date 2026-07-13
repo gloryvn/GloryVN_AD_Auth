@@ -1,5 +1,7 @@
+import asyncio
 import logging
-import threading
+import os
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from telegram.ext import ApplicationBuilder
 
@@ -14,40 +16,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+PORT = int(os.getenv("PORT", 10000))
 
-def run_bot(token, register_fn, name):
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        pass
+
+
+def run_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    logger.info("Health server listening on port %d", PORT)
+    server.serve_forever()
+
+
+async def run_bot(token, register_fn, name):
     logger.info("Starting %s ...", name)
     app = ApplicationBuilder().token(token).build()
     register_fn(app)
     logger.info("%s is polling ...", name)
-    app.run_polling()
+    await app.updater.start_polling()
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await app.updater.stop()
 
 
-def main():
+async def main():
     init_db()
     logger.info("Database initialized.")
 
-    t1 = threading.Thread(
-        target=run_bot,
-        args=(CUSTOMER_BOT_TOKEN, customer_bot.register_handlers, "CustomerBot"),
-        daemon=True
-    )
-    t2 = threading.Thread(
-        target=run_bot,
-        args=(ADMIN_BOT_TOKEN, admin_bot.register_handlers, "AdminBot"),
-        daemon=True
-    )
-
-    t1.start()
-    t2.start()
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, run_health_server)
 
     logger.info("Both bots are running. Press Ctrl+C to stop.")
-    try:
-        t1.join()
-        t2.join()
-    except KeyboardInterrupt:
-        logger.info("Shutting down ...")
+    await asyncio.gather(
+        run_bot(CUSTOMER_BOT_TOKEN, customer_bot.register_handlers, "CustomerBot"),
+        run_bot(ADMIN_BOT_TOKEN, admin_bot.register_handlers, "AdminBot"),
+    )
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
